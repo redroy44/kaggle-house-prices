@@ -21,6 +21,7 @@ test_data <- read_csv(file_test)
 
 full_data = bind_rows(train_data, test_data)
 
+
 # Check character columns and turn them into factors-----------------------
 full_data %>%  
   select_if(is_character) %>%
@@ -33,16 +34,36 @@ full_data <- full_data %>%
 
 glimpse(full_data)
 summary(full_data)
+
+
 # Look for NA's in full_data ----------------------------------------------
-full_data %>%
+full_nas <- full_data %>%
   summarise_each(funs(sum(is.na(.)))) %>%
   t() %>% data.frame() %>% as_tibble() %>% rownames_to_column() %>%
   mutate(percent = ./nrow(full_data)*100) %>%
-  arrange(desc(percent))
+  arrange(desc(percent)) %>%
+  print
+
+# Remove columns with most NA's
+full_data  <- full_data %>%
+  select(-one_of(full_nas$rowname[1:4]), -one_of(full_nas$rowname[6]))
 
 # Explore columns with small variance
 full_data %>%
-  select(nearZeroVar(.))
+  select(nearZeroVar(.)) %>%
+  colnames()
+
+# Remove columns with near zero variance
+full_data  <- full_data %>%
+  select(-nearZeroVar(.))
+
+
+# Plotting time -----------------------------------------------------------
+
+
+
+
+
 
 
 
