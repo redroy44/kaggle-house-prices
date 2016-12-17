@@ -97,11 +97,19 @@ full_data %>%
   summarise_each(funs(sum(is.na(.)))) %>%
   print
 
+# Continuous variables exploration ----------------------------------------
+full_data %>%
+  mutate(FirstFlrSF = `1stFlrSF`, SecondFlrSF = `2ndFlrSF`) %>%
+  select(-SalePrice, -`1stFlrSF`, -`2ndFlrSF`) %>%
+  select_if(is_integer) %>%
+  summarise_each(funs(IQR(.)))
+
+
 # Resplit train and test data ---------------------------------------------
 
 train_data <- full_data %>%
   filter(!is.na(SalePrice)) %>%
-  mutate(logSalePrice = log(SalePrice)) %>%
+  mutate(logSalePrice = log(SalePrice + 1)) %>%
   select(-SalePrice)
 
 test_data <- full_data %>%
@@ -120,23 +128,25 @@ testing <- train_data %>%
 # glmnet -------------------------------------------------------------------
 fitControl <- trainControl(## 10-fold CV
   method = "repeatedcv",
-  number = 10,
+  number = 5,
   ## repeated ten times
-  repeats = 10,
-  savePredictions="final")
+  repeats = 5)
 
-trGrid <-  expand.grid(.alpha = seq(0, 0.2, length.out = 40),
-                       .lambda = seq(0, 1, length.out = 10))
+trGrid <-  expand.grid(.alpha = 0,
+                       .lambda = seq(0, 1, length.out = 100))
 
 glmFit<-train(logSalePrice~., data=select(training, -Id),
               method='glmnet',
+              preProcess = c("center", "scale"),
               trControl = fitControl,
+              maximize=FALSE,
               metric = "RMSE",
               tuneGrid=trGrid
 )
 glmFit
 ggplot(glmFit)
 varImp(glmFit,scale=F)
+mean(glmFit$resample$RMSE)
 
 glm_predictions<- predict(glmFit, select(testing, -Id))
 rmse(testing$logSalePrice, glm_predictions)
@@ -145,6 +155,7 @@ rmse(testing$logSalePrice, glm_predictions)
 rfFit<-train(logSalePrice~., data=select(training, -Id),
               method='ranger',
               trControl = fitControl,
+              maximize=FALSE,
               metric = "RMSE",
               tuneLength = 3
 )
@@ -160,6 +171,7 @@ trGrid <-  expand.grid(.degree = round(seq(1, 3, length.out = 3)),
 spFit<-train(logSalePrice~., data=select(training, -Id),
              method='earth',
              trControl = fitControl,
+             maximize=FALSE,
              metric = "RMSE",
              tuneGrid=trGrid
 )
@@ -186,6 +198,6 @@ glm_final <- predict(glmFit, newdata = select(test_data, -Id))
 rf_final <- predict(rfFit, newdata = select(test_data, -Id))
 sp_final <- predict(spFit, newdata = select(test_data, -Id))
 Prediction <- rowMeans(cbind(glm_final, rf_final, sp_final))
-submit <- data.frame(Id = test_data$Id, SalePrice = exp(Prediction))
+submit <- data.frame(Id = test_data$Id, SalePrice = exp(Prediction) - 1)
 write.csv(submit, file = "mysubmission.csv", row.names = FALSE)
 
