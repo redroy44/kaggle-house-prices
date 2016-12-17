@@ -36,3 +36,6 @@ vignettes/*.pdf
 # Custom ignores
 data/
 .DS_Store
+
+imputed.csv
+mysubmission.csv
