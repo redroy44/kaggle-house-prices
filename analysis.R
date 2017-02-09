@@ -245,7 +245,15 @@ full_data <- full_data %>%
   mutate_if(function(col) is.numeric(col) && skewness(col) > 0.75, funs(log(. + 1))) %>%
   bind_cols(SalePrice = price)
 
-
+# Interaction vars
+# full_data <- full_data %>%
+  # mutate(Basement = TotalBsmtSF * BsmtUnfSF) %>%
+  # mutate(Ground = TotalBsmtSF * BsmtUnfSF) %>%
+  # mutate(Bath = TotalBsmtSF * BsmtUnfSF) %>%
+  # mutate(AboveGround = TotalBsmtSF * BsmtUnfSF) %>%
+  # mutate(livingArea = TotalBsmtSF * BsmtUnfSF) %>%
+  # mutate(years = TotalBsmtSF * BsmtUnfSF) %>%
+  # mutate(Lot = TotalBsmtSF * BsmtUnfSF)
 
 # Resplit train and test data ---------------------------------------------
 
@@ -274,8 +282,8 @@ fitControl <- trainControl(## 10-fold CV
   ## repeated ten times
   repeats = 5)
 
-trGrid <-  expand.grid(.alpha = seq(0, .8, length.out = 50),
-                       .lambda = seq(0, 0.1, length.out = 100))
+trGrid <-  expand.grid(.alpha = 0.7673469,#seq(0, .8, length.out = 50),
+                       .lambda = 0.004040404)#seq(0, 0.1, length.out = 100))
 
 glmFit<-train(logSalePrice~., data=select(training, -Id),
               method='glmnet',
@@ -286,18 +294,18 @@ glmFit<-train(logSalePrice~., data=select(training, -Id),
               tuneGrid=trGrid
 )
 glmFit
-ggplot(glmFit)
 varImp(glmFit,scale=F)
 mean(glmFit$resample$RMSE)
 
 glm_predictions<- predict(glmFit, select(testing, -Id))
 rmse(testing$logSalePrice, glm_predictions)
 
-trGrid <-  expand.grid(.mtry = seq(0, 93, length.out = 6))
 
-# ranger
+trGrid <-  expand.grid(.lambda = seq(0, 0.03, length.out = 10))
+
+# quantile random forest
 rfFit<-train(logSalePrice~., data=select(training, -Id),
-              method='ranger',
+              method='rqlasso',
               preProcess = c("center", "scale", "nzv"),
               trControl = fitControl,
               maximize=FALSE,
@@ -305,41 +313,60 @@ rfFit<-train(logSalePrice~., data=select(training, -Id),
               tuneGrid=trGrid
 )
 rfFit
+mean(rfFit$resample$RMSE)
 
 rf_predictions<- predict(rfFit, select(testing, -Id))
 rmse(testing$logSalePrice, rf_predictions)
 
-trGrid <-  expand.grid(.C = round(seq(1, 3, length.out = 3)),
-                       .nprune = seq(1, 30, length.out = 10))
+trGrid <-  expand.grid(.C = round(seq(1, 3, length.out = 3)))
 
-# non-linear gamSpline
+# svm
 svmFit<-train(logSalePrice~., data=select(training, -Id),
-             method='svmLinear2',
+             method='svmRadialCost',
              preProcess = c("center", "scale", "nzv"),
              trControl = fitControl,
              maximize=FALSE,
              metric = "RMSE",
-             tuneLength = 5
+             tuneGrid=trGrid
 )
 svmFit
 svm_predictions<- predict(svmFit, select(testing, -Id))
 rmse(testing$logSalePrice, svm_predictions)
 
 # randomGLM
-rglmFit<-train(logSalePrice~., data=select(training, -Id),
-              method='randomGLM',
-              preProcess = c("center", "scale", "nzv"),
-              trControl = fitControl,
-              maximize=FALSE,
-              metric = "RMSE",
-              tuneLength = 2
+# rglmFit<-train(logSalePrice~., data=select(training, -Id),
+#               method='randomGLM',
+#               #preProcess = c("center", "scale", "nzv"),
+#               trControl = fitControl,
+#               maximize=FALSE,
+#               metric = "RMSE",
+#               tuneLength = 5
+# )
+# rglmFit
+# rglm_predictions<- predict(rglmFit, select(testing, -Id))
+# rmse(testing$logSalePrice, rglm_predictions)
+
+# gbm
+trGrid <-  expand.grid(.n.trees = 3000,#(10:30)*100,
+                       .shrinkage=0.003,
+                       .interaction.depth=c(7),
+                       .n.minobsinnode = 10)
+
+gbmFit<-train(logSalePrice~., data=select(training, -Id),
+               method='gbm',
+               preProcess = c("center", "scale", "nzv"),
+               trControl = fitControl,
+               maximize=FALSE,
+               metric = "RMSE",
+               tuneGrid=trGrid,
+               verbose=FALSE
 )
-rglmFit
-rglm_predictions<- predict(rglmFit, select(testing, -Id))
-rmse(testing$logSalePrice, rglm_predictions)
+gbmFit
+gbm_predictions<- predict(gbmFit, select(testing, -Id))
+rmse(testing$logSalePrice, gbm_predictions)
 
 # Create model_list
-model_list <- list(glm = glmFit, rf = rfFit)
+model_list <- list(glm = glmFit, rf = rfFit, svm = svmFit, gbm = gbmFit)
 
 # Pass model_list to resamples(): resamples
 resamples <- resamples(model_list)
@@ -348,15 +375,28 @@ resamples <- resamples(model_list)
 summary(resamples)
 bwplot(resamples, metric = "RMSE")
 
-mean_prediction <- rowMeans(cbind(glm_predictions, rf_predictions))
+mean_prediction <- rowMeans(cbind(glm_predictions, gbm_predictions))
 rmse(testing$logSalePrice, mean_prediction)
 
+# meta model
+df <- data.frame(cbind(testing$logSalePrice, glm_predictions, gbm_predictions, rf_predictions))
+colnames(df) <- c("price", "glm", "gbm", "rf")
+metaFit <- lm(price~., df)
+
+meta_predictions <- predict(metaFit, newdata = df$price)
+rmse(testing$logSalePrice, meta_predictions)
 
 # Write submission file ---------------------------------------------------
 glm_final <- predict(glmFit, newdata = select(test_data, -Id))
+svm_final <- predict(svmFit, newdata = select(test_data, -Id))
+gbm_final <- predict(gbmFit, newdata = select(test_data, -Id))
 rf_final <- predict(rfFit, newdata = select(test_data, -Id))
-sp_final <- predict(spFit, newdata = select(test_data, -Id))
-Prediction <- glm_final#rowMeans(cbind(glm_final, rf_final))
+
+df_test <- data.frame(cbind(glm_final, gbm_final, rf_final))
+colnames(df_test) <- c("glm", "gbm", "rf")
+meta_final <- predict(metaFit, newdata = df_test)
+
+Prediction <- rf_final#rowMeans(cbind(glm_final, gbm_final))
 submit <- data.frame(Id = test_data$Id, SalePrice = exp(Prediction) - 1)
-write.csv(submit, file = "mysubmission.csv", row.names = FALSE)
+write.csv(submit, file = "rf.csv", row.names = FALSE)
 
