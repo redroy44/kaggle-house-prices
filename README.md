@@ -1,6 +1,8 @@
 # kaggle-house-prices
 House Prices: Advanced Regression Techniques
 
+[Dataset Description](https://ww2.amstat.org/publications/jse/v19n3/decock/DataDocumentation.txt)
+
 ## Fields description
 
 - SalePrice - the property's sale price in dollars. This is the target variable that you're trying to predict.
