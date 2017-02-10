@@ -1,14 +1,14 @@
 # Load the packages -------------------------------------------------------
-library(checkpoint)
-checkpoint("2017-01-15")
+#library(checkpoint)
+#checkpoint("2017-01-15")
 library(tidyverse)
 library(forcats)
 library(mice)
 library(caret)
 library(Metrics)
 library(e1071)
-library(doMC)
-registerDoMC(cores = 4)
+#library(doMC)
+#registerDoMC(cores = 4)
 set.seed(29082012)
 
 # dataset path
@@ -186,10 +186,14 @@ full_data %>%
 
 full_data %>%
   mutate(logSalePrice = log(SalePrice)) %>%
-  select(logSalePrice, YearBuilt) %>%
+  dplyr::select(logSalePrice, YearBuilt) %>%
   ggplot(aes(x = YearBuilt, y = logSalePrice)) +
   geom_jitter() +
   geom_smooth()
+
+# Feature Engineering
+full_data <- full_data %>%
+  mutate(ifelse(GarageYrBlt> 2010, GarageYrBlt, NA))
 
 # Impute missing variables ------------------------------------------------
 if(!file.exists("imputed.csv")) {
@@ -202,46 +206,47 @@ if(!file.exists("imputed.csv")) {
 
 nas <- full_nas %>%
   filter(. > 0, rowname != "SalePrice") %>%
-  select(rowname)
+  dplyr::select(rowname)
 
 imputed_nas <- imputed_data %>%
   select(one_of(nas$rowname))
 
 full_data <- full_data %>%
-  select(-one_of(nas$rowname)) %>%
+  dplyr::select(-one_of(nas$rowname)) %>%
   bind_cols(imputed_nas)
 
 full_data %>%
-  summarise_each(funs(sum(is.na(.)))) %>%
+  summarise_each(funs(sum(is.na(.))))
+
 
   
 # Explore columns with small variance
-full_data %>%
-  select(nearZeroVar(full_data)) %>%
-  colnames()
+#full_data %>%
+#  select(nearZeroVar(.)) %>%
+#  colnames()
 
 # Remove columns with near zero variance
 full_data  <- full_data %>%
-  select(-nearZeroVar(.))
+  dplyr::select(-nearZeroVar(.))
   
 
 # Continuous variables exploration ----------------------------------------
 full_data %>%
   mutate(FirstFlrSF = `1stFlrSF`, SecondFlrSF = `2ndFlrSF`) %>%
-  select(-`1stFlrSF`, -`2ndFlrSF`) %>%
+  dplyr::select(-`1stFlrSF`, -`2ndFlrSF`) %>%
   select_if(is.numeric) %>%
   summarise_each(funs(skewness(.)))
 
 # Normalize skewed variables
 full_data <- full_data %>%
   mutate(FirstFlrSF = `1stFlrSF`, SecondFlrSF = `2ndFlrSF`) %>%
-  select(-`1stFlrSF`, -`2ndFlrSF`)# %>%
+  dplyr::select(-`1stFlrSF`, -`2ndFlrSF`)# %>%
 
 price <- full_data %>%
-  select(SalePrice)
+  dplyr::select(SalePrice)
 
 full_data <- full_data %>%
-  select(-SalePrice) %>%
+  dplyr::select(-SalePrice) %>%
   mutate_if(function(col) is.numeric(col) && skewness(col) > 0.75, funs(log(. + 1))) %>%
   bind_cols(SalePrice = price)
 
@@ -255,17 +260,36 @@ full_data <- full_data %>%
   # mutate(years = TotalBsmtSF * BsmtUnfSF) %>%
   # mutate(Lot = TotalBsmtSF * BsmtUnfSF)
 
+summary(full_data)
+
 # Resplit train and test data ---------------------------------------------
 
 train_data <- full_data %>%
   filter(!is.na(SalePrice)) %>%
   mutate(logSalePrice = log(SalePrice + 1)) %>%
-  select(-SalePrice)
+  dplyr::select(-SalePrice)
 
 test_data <- full_data %>%
   filter(is.na(SalePrice)) %>%
-  select(-SalePrice)
+  dplyr::select(-SalePrice)
 
+# Outliers hunting
+lmFit <- lm(logSalePrice~., data=dplyr::select(train_data, -Id))
+cooksd <- cooks.distance(lmFit)
+cutoff <- 0.10
+plot(cooksd, pch="*", cex=2, main="Influential Obs by Cooks distance")  # plot cook's distance
+abline(h = cutoff, col="red")  # add cutoff line
+text(x=1:length(cooksd)+1, y=cooksd, labels=ifelse(cooksd>cutoff,names(cooksd),""), col="red")  # add labels
+
+#lm_predictions<- predict(lmFit, select(testing, -Id))
+#postResample(pred = lm_predictions, obs = testing$logSalePrice)
+
+train_data %>%
+  #filter(cooksd>10*mean(cooksd, na.rm=T))
+  filter(cooksd>cutoff)
+
+train_data <- train_data %>%
+  filter(cooksd<cutoff)
 
 # Model fitting and validation --------------------------------------------
 inTrain <- createDataPartition(train_data$logSalePrice, p = 0.75, list = F)
@@ -277,15 +301,15 @@ testing <- train_data %>%
 
 # glmnet -------------------------------------------------------------------
 fitControl <- trainControl(## 10-fold CV
-  method = "repeatedcv",
+  method = "LGOCV",
   number = 5,
   ## repeated ten times
-  repeats = 5)
+  repeats = 10)
 
-trGrid <-  expand.grid(.alpha = 0.7673469,#seq(0, .8, length.out = 50),
-                       .lambda = 0.004040404)#seq(0, 0.1, length.out = 100))
+trGrid <-  expand.grid(.alpha = 0.7673469,
+                       .lambda = 0.004040404)
 
-glmFit<-train(logSalePrice~., data=select(training, -Id),
+glmFit<-train(logSalePrice~., data=dplyr::select(training, -Id),
               method='glmnet',
               preProcess = c("center", "scale", "nzv"),
               trControl = fitControl,
@@ -298,12 +322,11 @@ varImp(glmFit,scale=F)
 mean(glmFit$resample$RMSE)
 
 glm_predictions<- predict(glmFit, select(testing, -Id))
-rmse(testing$logSalePrice, glm_predictions)
-
+postResample(pred = glm_predictions, obs = testing$logSalePrice)
 
 trGrid <-  expand.grid(.lambda = seq(0, 0.03, length.out = 10))
 
-# quantile random forest
+# quantile regression with L!
 rfFit<-train(logSalePrice~., data=select(training, -Id),
               method='rqlasso',
               preProcess = c("center", "scale", "nzv"),
@@ -316,9 +339,9 @@ rfFit
 mean(rfFit$resample$RMSE)
 
 rf_predictions<- predict(rfFit, select(testing, -Id))
-rmse(testing$logSalePrice, rf_predictions)
+postResample(pred = rf_predictions, obs = testing$logSalePrice)
 
-trGrid <-  expand.grid(.C = round(seq(1, 3, length.out = 3)))
+trGrid <-  expand.grid(.C = 2)#round(seq(1, 3, length.out = 3)))
 
 # svm
 svmFit<-train(logSalePrice~., data=select(training, -Id),
@@ -330,24 +353,26 @@ svmFit<-train(logSalePrice~., data=select(training, -Id),
              tuneGrid=trGrid
 )
 svmFit
-svm_predictions<- predict(svmFit, select(testing, -Id))
-rmse(testing$logSalePrice, svm_predictions)
+svm_predictions<- predict(svmFit, dplyr::select(testing, -Id))
+postResample(pred = svm_predictions, obs = testing$logSalePrice)
 
-# randomGLM
-# rglmFit<-train(logSalePrice~., data=select(training, -Id),
-#               method='randomGLM',
-#               #preProcess = c("center", "scale", "nzv"),
+#trGrid <-  expand.grid(.df = round(seq(1, 5, length.out = 5)))
+
+# gamSpline
+# gamFit<-train(logSalePrice~.-Exterior1st-GarageFinish-Exterior2nd-ExterQual-ExterCond-HeatingQC-GarageCond-GarageQual-BsmtQual-BsmtExposure-Fence-OverallCond-FireplaceQu-BsmtFinType1-OverallQual, data=select(training, -Id),
+#               method='gamSpline',
+#               preProcess = c("center", "scale", "nzv"),
 #               trControl = fitControl,
 #               maximize=FALSE,
 #               metric = "RMSE",
-#               tuneLength = 5
+#               tuneGrid=trGrid
 # )
-# rglmFit
-# rglm_predictions<- predict(rglmFit, select(testing, -Id))
-# rmse(testing$logSalePrice, rglm_predictions)
+# gamFit
+# gam_predictions<- predict(gamFit, select(testing, -Id))
+# postResample(pred = gam_predictions, obs = testing$logSalePrice)
 
 # gbm
-trGrid <-  expand.grid(.n.trees = 3000,#(10:30)*100,
+trGrid <-  expand.grid(.n.trees = 2000,#(10:30)*100,
                        .shrinkage=0.003,
                        .interaction.depth=c(7),
                        .n.minobsinnode = 10)
@@ -363,7 +388,7 @@ gbmFit<-train(logSalePrice~., data=select(training, -Id),
 )
 gbmFit
 gbm_predictions<- predict(gbmFit, select(testing, -Id))
-rmse(testing$logSalePrice, gbm_predictions)
+postResample(pred = gbm_predictions, obs = testing$logSalePrice)
 
 # Create model_list
 model_list <- list(glm = glmFit, rf = rfFit, svm = svmFit, gbm = gbmFit)
@@ -376,13 +401,13 @@ summary(resamples)
 bwplot(resamples, metric = "RMSE")
 
 mean_prediction <- rowMeans(cbind(glm_predictions, gbm_predictions))
-rmse(testing$logSalePrice, mean_prediction)
+postResample(pred = mean_prediction, obs = testing$logSalePrice)
 
 # meta model
-df <- data.frame(cbind(testing$logSalePrice, glm_predictions, gbm_predictions, rf_predictions))
-colnames(df) <- c("price", "glm", "gbm", "rf")
+df <- data.frame(cbind(testing$logSalePrice, glm_predictions, gbm_predictions, rf_predictions, svm_predictions))
+colnames(df) <- c("price", "glm", "gbm", "rf", "svm")
 metaFit <- lm(price~., df)
-
+summary(metaFit)
 meta_predictions <- predict(metaFit, newdata = df$price)
 rmse(testing$logSalePrice, meta_predictions)
 
@@ -392,11 +417,11 @@ svm_final <- predict(svmFit, newdata = select(test_data, -Id))
 gbm_final <- predict(gbmFit, newdata = select(test_data, -Id))
 rf_final <- predict(rfFit, newdata = select(test_data, -Id))
 
-df_test <- data.frame(cbind(glm_final, gbm_final, rf_final))
-colnames(df_test) <- c("glm", "gbm", "rf")
+df_test <- data.frame(cbind(glm_final, gbm_final, rf_final, svm_final))
+colnames(df_test) <- c("glm", "gbm", "rf", "svm")
 meta_final <- predict(metaFit, newdata = df_test)
 
-Prediction <- rf_final#rowMeans(cbind(glm_final, gbm_final))
+Prediction <- meta_final#rowMeans(cbind(glm_final, gbm_final))
 submit <- data.frame(Id = test_data$Id, SalePrice = exp(Prediction) - 1)
-write.csv(submit, file = "rf.csv", row.names = FALSE)
+write.csv(submit, file = "super_meta_submission.csv", row.names = FALSE)
 
