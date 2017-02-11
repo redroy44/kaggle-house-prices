@@ -1,15 +1,15 @@
 # Load the packages -------------------------------------------------------
-#library(checkpoint)
-#checkpoint("2017-01-15")
+library(checkpoint)
+checkpoint("2017-01-15")
+library(mice)
 library(tidyverse)
 library(forcats)
-library(mice)
 library(caret)
 library(Metrics)
 library(e1071)
 #library(doMC)
 #registerDoMC(cores = 4)
-set.seed(29082012)
+set.seed(123)
 
 # dataset path
 file_train <- "data/train.csv"
@@ -191,10 +191,6 @@ full_data %>%
   geom_jitter() +
   geom_smooth()
 
-# Feature Engineering
-full_data <- full_data %>%
-  mutate(ifelse(GarageYrBlt> 2010, GarageYrBlt, NA))
-
 # Impute missing variables ------------------------------------------------
 if(!file.exists("imputed.csv")) {
   imputed_data <- complete(mice(select(full_data, -SalePrice), meth = c("cart")))
@@ -231,7 +227,7 @@ full_data  <- full_data %>%
   
 
 # Continuous variables exploration ----------------------------------------
-full_data %>%
+a<- full_data %>%
   mutate(FirstFlrSF = `1stFlrSF`, SecondFlrSF = `2ndFlrSF`) %>%
   dplyr::select(-`1stFlrSF`, -`2ndFlrSF`) %>%
   select_if(is.numeric) %>%
@@ -276,7 +272,7 @@ test_data <- full_data %>%
 # Outliers hunting
 lmFit <- lm(logSalePrice~., data=dplyr::select(train_data, -Id))
 cooksd <- cooks.distance(lmFit)
-cutoff <- 0.10
+cutoff <- 0.04
 plot(cooksd, pch="*", cex=2, main="Influential Obs by Cooks distance")  # plot cook's distance
 abline(h = cutoff, col="red")  # add cutoff line
 text(x=1:length(cooksd)+1, y=cooksd, labels=ifelse(cooksd>cutoff,names(cooksd),""), col="red")  # add labels
@@ -301,7 +297,7 @@ testing <- train_data %>%
 
 # glmnet -------------------------------------------------------------------
 fitControl <- trainControl(## 10-fold CV
-  method = "LGOCV",
+  method = "repeatedcv",
   number = 5,
   ## repeated ten times
   repeats = 10)
@@ -326,7 +322,7 @@ postResample(pred = glm_predictions, obs = testing$logSalePrice)
 
 trGrid <-  expand.grid(.lambda = seq(0, 0.03, length.out = 10))
 
-# quantile regression with L!
+# quantile regression with L1
 rfFit<-train(logSalePrice~., data=select(training, -Id),
               method='rqlasso',
               preProcess = c("center", "scale", "nzv"),
@@ -372,7 +368,7 @@ postResample(pred = svm_predictions, obs = testing$logSalePrice)
 # postResample(pred = gam_predictions, obs = testing$logSalePrice)
 
 # gbm
-trGrid <-  expand.grid(.n.trees = 2000,#(10:30)*100,
+trGrid <-  expand.grid(.n.trees = 3000,#(10:30)*100,
                        .shrinkage=0.003,
                        .interaction.depth=c(7),
                        .n.minobsinnode = 10)
@@ -400,16 +396,16 @@ resamples <- resamples(model_list)
 summary(resamples)
 bwplot(resamples, metric = "RMSE")
 
-mean_prediction <- rowMeans(cbind(glm_predictions, gbm_predictions))
+mean_prediction <- rowMeans(cbind(glm_predictions, gbm_predictions, rf_predictions, svm_predictions))
 postResample(pred = mean_prediction, obs = testing$logSalePrice)
 
 # meta model
 df <- data.frame(cbind(testing$logSalePrice, glm_predictions, gbm_predictions, rf_predictions, svm_predictions))
 colnames(df) <- c("price", "glm", "gbm", "rf", "svm")
-metaFit <- lm(price~., df)
+metaFit <- lm(price~.-rf, df)
 summary(metaFit)
-meta_predictions <- predict(metaFit, newdata = df$price)
-rmse(testing$logSalePrice, meta_predictions)
+#meta_predictions <- predict(metaFit, newdata = df$price)
+#rmse(testing$logSalePrice, meta_predictions)
 
 # Write submission file ---------------------------------------------------
 glm_final <- predict(glmFit, newdata = select(test_data, -Id))
@@ -421,7 +417,7 @@ df_test <- data.frame(cbind(glm_final, gbm_final, rf_final, svm_final))
 colnames(df_test) <- c("glm", "gbm", "rf", "svm")
 meta_final <- predict(metaFit, newdata = df_test)
 
-Prediction <- meta_final#rowMeans(cbind(glm_final, gbm_final))
+Prediction <- rowMeans(cbind(glm_final, gbm_final, rf_final, svm_final))
 submit <- data.frame(Id = test_data$Id, SalePrice = exp(Prediction) - 1)
-write.csv(submit, file = "super_meta_submission.csv", row.names = FALSE)
+write.csv(submit, file = "mean_submission.csv", row.names = FALSE)
 
